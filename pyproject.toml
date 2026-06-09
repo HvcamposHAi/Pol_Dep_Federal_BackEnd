@@ -1,0 +1,54 @@
+[project]
+name = "pol-dep-federal-backend"
+version = "0.1.0"
+description = "Backend de importação e enriquecimento de leads (Apollo.io + ViaCEP) — campanha Indiara Barbosa."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "openpyxl>=3.1",
+    "tenacity>=8.2",
+    "python-dateutil>=2.9",
+    "phonenumbers>=8.13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "respx>=0.21",
+    "aiosqlite>=0.20",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+enrich-cli = "app.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]  # FastAPI Depends() in defaults is idiomatic
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "e2e: testes end-to-end (mais lentos, usam DB de teste)",
+]
