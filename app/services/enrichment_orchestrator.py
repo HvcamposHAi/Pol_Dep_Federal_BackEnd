@@ -34,6 +34,9 @@ class EnrichmentOrchestrator:
         self._viacep = ViaCepService(
             settings, AsyncRateLimiter.from_rpm(settings.viacep_rate_limit)
         )
+        # Disjuntor: ao primeiro 401/403 do Apollo (chave/plano sem acesso), para de
+        # chamar o Apollo no resto da execução (evita 403 em toda a base + rate limit).
+        self._apollo_blocked = False
 
     @staticmethod
     def _rounds(provider_scope: list[str]) -> list[tuple[int, bool | None]]:
@@ -68,6 +71,22 @@ class EnrichmentOrchestrator:
                     session, cidade=cidade, estado=estado
                 )
             scope = list(run.provider_scope)
+            # Apollo exige chave válida. Sem chave, pula o Apollo por completo — evita
+            # 403 em todos os leads e a espera inútil do rate limit (46/min).
+            if "apollo" in scope and not self._settings.apollo_api_key:
+                scope = [p for p in scope if p != "apollo"]
+                await enrichment_repo.log_event(
+                    session,
+                    run_id=run_id,
+                    lead_id=None,
+                    provider="orchestrator",
+                    level="warn",
+                    event_type="skipped",
+                    message=(
+                        "Apollo ignorado: APOLLO_API_KEY não configurada "
+                        "(defina em Configurações › Integrações)."
+                    ),
+                )
             await session.commit()
 
         if dry_run:
@@ -75,7 +94,7 @@ class EnrichmentOrchestrator:
             return
 
         remaining = limit
-        batch = self._settings.enrich_batch_size
+        batch = self._settings.enrich_run_batch_size
         for round_number, with_email in self._rounds(scope):
             while True:
                 if remaining is not None and remaining <= 0:
@@ -121,32 +140,75 @@ class EnrichmentOrchestrator:
     ) -> None:
         filled_total: list[str] = []
         apollo_matched: bool | None = None
+        reasons: list[str] = []  # motivos quando negativo
+        apollo_ran = False
         try:
             if "viacep" in scope:
                 viacep_result = await self._viacep.enrich(lead)
                 await self._apply(session, run_id, lead, viacep_result, filled_total)
-            if "apollo" in scope:
+                if viacep_result.error:
+                    reasons.append(f"ViaCEP: {viacep_result.error}")
+                elif not viacep_result.candidate:
+                    reasons.append("ViaCEP: sem dados")
+            if "apollo" in scope and not self._apollo_blocked:
+                apollo_ran = True
                 result = await self._apollo.enrich(lead)
+                # Sem acesso (401/403): desabilita o Apollo para o resto da execução.
+                if result.http_status in (401, 403):
+                    self._apollo_blocked = True
+                    await enrichment_repo.log_event(
+                        session,
+                        run_id=run_id,
+                        lead_id=None,
+                        provider="orchestrator",
+                        level="warn",
+                        event_type="skipped",
+                        message=(
+                            f"Apollo desabilitado nesta execução: {result.error}. "
+                            "Revise a chave/plano em Configurações › Integrações."
+                        ),
+                    )
                 if result.matched:
                     apollo_matched = True
                     run.matched_count += 1
                 elif result.error is None:
                     apollo_matched = False
                 await self._apply(session, run_id, lead, result, filled_total)
+                if result.error:
+                    reasons.append(f"Apollo: {result.error}")
+                elif not result.matched:
+                    reasons.append("Apollo: sem correspondência")
+            elif "apollo" in scope and self._apollo_blocked:
+                reasons.append("Apollo: desabilitado (sem acesso)")
 
-            status = "enriched" if (filled_total or apollo_matched) else "skipped"
+            # Resultado: positivo = match no Apollo OU algum campo novo preenchido.
+            positivo = bool(apollo_matched or filled_total)
+            if positivo:
+                status = "enriched"
+                parts: list[str] = []
+                if filled_total:
+                    parts.append("campos: " + ", ".join(dict.fromkeys(filled_total)))
+                if apollo_matched and not filled_total:
+                    parts.append("match Apollo (sem campo novo)")
+                note = "; ".join(parts) or "match"
+            else:
+                status = "skipped"
+                note = "; ".join(reasons) or "sem correspondência"
+
             await lead_repo.patch_fields(
                 session,
                 lead,
                 patch={},
                 provenance={},
-                provider="apollo" if "apollo" in scope else None,
+                provider="apollo" if apollo_ran else None,
                 apollo_matched=apollo_matched,
                 status=status,
+                note=note,
             )
         except Exception as exc:  # noqa: BLE001 - registra falha e segue (status terminal)
             run.error_count += 1
             lead.enrichment_status = "failed"
+            lead.enrichment_note = f"erro: {exc}"[:480]
             await enrichment_repo.log_event(
                 session,
                 run_id=run_id,

@@ -2,6 +2,16 @@
 .env
 .env.*
 !.env.example
+runtime_config.json
+
+# Banco local de teste (SQLite)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Frontend buildado e embutido (gerado por build_bundle.bat)
+static/
 
 # Python
 __pycache__/

@@ -75,6 +75,7 @@ class LeadOut(BaseModel):
     apollo_enriched_at: datetime | None = None
     viacep_enriched_at: datetime | None = None
     enrichment_status: str = "pending"
+    enrichment_note: str | None = None
     field_provenance: dict = {}
     created_at: datetime | None = None
     updated_at: datetime | None = None

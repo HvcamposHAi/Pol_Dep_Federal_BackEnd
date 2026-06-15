@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.repositories import lead_repo
 from app.schemas.common import Page
 from app.schemas.lead import ImportResult, LeadOut
-from app.services import import_service
+from app.schemas.stats import FieldCoverageOut
+from app.services import export_service, import_service
 
 router = APIRouter(prefix="/leads", tags=["leads"])
+
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 @router.post("/import", response_model=ImportResult)
@@ -48,6 +53,57 @@ async def list_leads(
     )
     return Page[LeadOut](
         items=[LeadOut.model_validate(i) for i in items], page=page, size=size, total=total
+    )
+
+
+@router.get("/field-coverage", response_model=list[FieldCoverageOut])
+async def field_coverage(
+    enrichment_status: str | None = None,
+    apollo_matched: bool | None = None,
+    cidade: str | None = None,
+    estado: str | None = None,
+    q: str | None = None,
+    session: AsyncSession = Depends(get_db),
+) -> list[FieldCoverageOut]:
+    rows = await lead_repo.field_coverage(
+        session,
+        enrichment_status=enrichment_status,
+        apollo_matched=apollo_matched,
+        cidade=cidade,
+        estado=estado,
+        q=q,
+    )
+    return [FieldCoverageOut(**r) for r in rows]
+
+
+@router.get("/export")
+async def export_leads(
+    format: Literal["csv", "xlsx"] = Query("csv"),
+    enrichment_status: str | None = None,
+    apollo_matched: bool | None = None,
+    cidade: str | None = None,
+    estado: str | None = None,
+    q: str | None = None,
+    session: AsyncSession = Depends(get_db),
+):
+    filters = {
+        "enrichment_status": enrichment_status,
+        "apollo_matched": apollo_matched,
+        "cidade": cidade,
+        "estado": estado,
+        "q": q,
+    }
+    if format == "xlsx":
+        content = await export_service.build_xlsx(session, **filters)
+        return Response(
+            content=content,
+            media_type=_XLSX_MEDIA_TYPE,
+            headers={"Content-Disposition": "attachment; filename=contatos.xlsx"},
+        )
+    return StreamingResponse(
+        export_service.stream_csv(session, **filters),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=contatos.csv"},
     )
 
 

@@ -3,17 +3,56 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.coverage import (
+    CORE_COMPLETENESS_FIELDS,
+    COVERAGE_FIELDS,
+    FIELD_SOURCES,
+    NON_TEXT_FIELDS,
+)
 from app.core.merge import fill_only_empty, is_empty
 from app.models.lead import Lead
 
 # Colunas mapeáveis (exclui PK/timestamps/controle) — usadas no upsert e provenance
 _CSV_PROVENANCE_SKIP = {"phone_e164", "raw_source"}
+
+
+def _apply_filters(
+    stmt,
+    *,
+    enrichment_status: str | None = None,
+    apollo_matched: bool | None = None,
+    cidade: str | None = None,
+    estado: str | None = None,
+    q: str | None = None,
+):
+    """Aplica o conjunto ÚNICO de filtros de leads (mesmo em list/stats/coverage/export)."""
+    if enrichment_status is not None:
+        stmt = stmt.where(Lead.enrichment_status == enrichment_status)
+    if apollo_matched is not None:
+        stmt = stmt.where(Lead.apollo_matched == apollo_matched)
+    if cidade:
+        stmt = stmt.where(Lead.cidade == cidade)
+    if estado:
+        stmt = stmt.where(Lead.estado == estado)
+    if q:
+        stmt = stmt.where(Lead.nome_completo.ilike(f"%{q}%"))
+    return stmt
+
+
+def _filled_expr(col_name: str) -> ColumnElement[int]:
+    """Expressão 1/0 "campo preenchido", espelhando ``merge.is_empty`` (portável SQLite+PG)."""
+    col = getattr(Lead, col_name)
+    if col_name in NON_TEXT_FIELDS:
+        return case((col.is_not(None), 1), else_=0)
+    return case((and_(col.is_not(None), func.trim(col) != ""), 1), else_=0)
 
 
 async def upsert_many(
@@ -84,24 +123,15 @@ async def list_leads(
     estado: str | None = None,
     q: str | None = None,
 ) -> tuple[list[Lead], int]:
-    conditions = []
-    if enrichment_status is not None:
-        conditions.append(Lead.enrichment_status == enrichment_status)
-    if apollo_matched is not None:
-        conditions.append(Lead.apollo_matched == apollo_matched)
-    if cidade:
-        conditions.append(Lead.cidade == cidade)
-    if estado:
-        conditions.append(Lead.estado == estado)
-    if q:
-        like = f"%{q}%"
-        conditions.append(Lead.nome_completo.ilike(like))
-
-    base = select(Lead)
-    count_q = select(func.count()).select_from(Lead)
-    for c in conditions:
-        base = base.where(c)
-        count_q = count_q.where(c)
+    filters = {
+        "enrichment_status": enrichment_status,
+        "apollo_matched": apollo_matched,
+        "cidade": cidade,
+        "estado": estado,
+        "q": q,
+    }
+    base = _apply_filters(select(Lead), **filters)
+    count_q = _apply_filters(select(func.count()).select_from(Lead), **filters)
 
     total = (await session.execute(count_q)).scalar_one()
     rows = (
@@ -166,6 +196,7 @@ async def patch_fields(
     provider: str | None,
     apollo_matched: bool | None = None,
     status: str | None = None,
+    note: str | None = None,
 ) -> None:
     """Aplica patch (só colunas preenchidas) + provenance + flags no lead."""
     now = datetime.now(UTC)
@@ -183,4 +214,74 @@ async def patch_fields(
         lead.viacep_enriched_at = now
     if status is not None:
         lead.enrichment_status = status
+    if note is not None:
+        lead.enrichment_note = note
     await session.flush()
+
+
+async def stats(session: AsyncSession) -> dict[str, Any]:
+    """KPIs do dashboard: total, completude média (% sobre o core set) e pendentes Apollo."""
+    total = (await session.execute(select(func.count()).select_from(Lead))).scalar_one()
+    if not total:
+        return {"total_leads": 0, "completude_media_pct": 0.0, "pendentes_apollo": 0}
+
+    pendentes = (
+        await session.execute(
+            select(func.count())
+            .select_from(Lead)
+            .where(or_(Lead.enrichment_status == "pending", Lead.apollo_matched.is_(False)))
+        )
+    ).scalar_one()
+
+    # Soma por linha de campos preenchidos sobre o core set, depois média entre linhas.
+    row_sum: ColumnElement[int] | None = None
+    for name in CORE_COMPLETENESS_FIELDS:
+        expr = _filled_expr(name)
+        row_sum = expr if row_sum is None else row_sum + expr
+    avg_filled = (await session.execute(select(func.avg(row_sum)))).scalar_one()
+    completude = (
+        round(float(avg_filled) / len(CORE_COMPLETENESS_FIELDS) * 100, 1)
+        if avg_filled is not None
+        else 0.0
+    )
+
+    return {
+        "total_leads": int(total),
+        "completude_media_pct": completude,
+        "pendentes_apollo": int(pendentes),
+    }
+
+
+async def field_coverage(session: AsyncSession, **filters: Any) -> list[dict[str, Any]]:
+    """Cobertura por campo (filled/missing/%), com os mesmos filtros de ``list_leads``."""
+    total = (
+        await session.execute(_apply_filters(select(func.count()).select_from(Lead), **filters))
+    ).scalar_one()
+
+    agg_cols = [func.sum(_filled_expr(col)).label(col) for col, _label in COVERAGE_FIELDS]
+    agg_stmt = _apply_filters(select(*agg_cols).select_from(Lead), **filters)
+    row = (await session.execute(agg_stmt)).one()
+
+    out: list[dict[str, Any]] = []
+    for idx, (col, label) in enumerate(COVERAGE_FIELDS):
+        filled = int(row[idx] or 0)
+        pct = round(filled / total * 100, 1) if total else 0.0
+        out.append(
+            {
+                "field": col,
+                "label": label,
+                "filled": filled,
+                "missing": int(total) - filled,
+                "coverage_pct": pct,
+                "sources": FIELD_SOURCES.get(col, []),
+            }
+        )
+    return out
+
+
+async def iter_export_rows(session: AsyncSession, **filters: Any) -> AsyncIterator[Lead]:
+    """Streaming de leads para exportação (não materializa toda a base em memória)."""
+    stmt = _apply_filters(select(Lead), **filters).order_by(Lead.created_at.desc())
+    result = await session.stream(stmt)
+    async for lead in result.scalars():
+        yield lead

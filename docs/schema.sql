@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS leads (
   apollo_enriched_at         timestamptz,
   viacep_enriched_at         timestamptz,
   enrichment_status          text NOT NULL DEFAULT 'pending',
+  enrichment_note            text,
   field_provenance           jsonb NOT NULL DEFAULT '{}'::jsonb,
   raw_source                 jsonb,
   created_at                 timestamptz NOT NULL DEFAULT now(),

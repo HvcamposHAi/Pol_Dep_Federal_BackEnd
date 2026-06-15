@@ -82,6 +82,8 @@ class Lead(Base):
     enrichment_status: Mapped[str] = mapped_column(
         String, nullable=False, default="pending", server_default="pending"
     )
+    # Motivo/resumo do tratamento (positivo: campos preenchidos; negativo: razão).
+    enrichment_note: Mapped[str | None] = mapped_column(Text)
     field_provenance: Mapped[dict] = mapped_column(JSONType, nullable=False, default=dict)
     raw_source: Mapped[dict | None] = mapped_column(JSONType)
     created_at: Mapped[datetime] = mapped_column(

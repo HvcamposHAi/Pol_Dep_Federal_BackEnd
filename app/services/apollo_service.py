@@ -83,10 +83,16 @@ class ApolloEnrichmentService:
             return ProviderResult(provider="apollo", error=str(exc))
 
         if resp.status_code != 200:
+            hint = ""
+            if resp.status_code in (401, 403):
+                hint = (
+                    " — chave Apollo inválida ou plano sem acesso à API de "
+                    "enriquecimento (confira em Apollo › Settings › Integrations › API)"
+                )
             return ProviderResult(
                 provider="apollo",
                 http_status=resp.status_code,
-                error=f"HTTP {resp.status_code}",
+                error=f"HTTP {resp.status_code}{hint}",
             )
 
         person = (resp.json() or {}).get("person")

@@ -4,6 +4,11 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core import runtime_config
+
+# Valor de exemplo do .env.example — tratado como "não configurado".
+APOLLO_KEY_PLACEHOLDER = "cole_sua_chave_aqui"
+
 
 class Settings(BaseSettings):
     """Variáveis de ambiente. Nomes documentados em .env.example."""
@@ -34,7 +39,8 @@ class Settings(BaseSettings):
 
     # Enriquecimento
     enrich_checkpoint_every: int = 25
-    enrich_batch_size: int = 500
+    enrich_batch_size: int = 500  # tamanho do lote no import (upsert)
+    enrich_run_batch_size: int = 50  # leads processados/commit por lote no enriquecimento
     default_phone_country: str = "BR"
 
     # App
@@ -42,12 +48,31 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_upload_mb: int = 50
 
+    # CORS — origens permitidas quando front e back rodam em domínios diferentes.
+    # Em dev (proxy same-origin do Vite) é inócuo. Aceita lista separada por vírgula.
+    cors_origins: str = "http://localhost:5173"
+
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
 
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:
-    """Singleton de configuração (cacheado) usado por DI e CLI."""
-    return Settings()
+    """Singleton de configuração (cacheado) usado por DI e CLI.
+
+    Aplica o override de runtime (definido na tela de Configurações) por cima do
+    ``.env``. Após mudar o override, chame ``get_settings.cache_clear()``.
+    """
+    settings = Settings()
+    apollo_override = runtime_config.get_apollo_key()
+    if apollo_override:
+        settings.apollo_api_key = apollo_override
+    # Normaliza placeholder/vazio -> "" (= não configurado) em todo o sistema.
+    if settings.apollo_api_key.strip() in ("", APOLLO_KEY_PLACEHOLDER):
+        settings.apollo_api_key = ""
+    return settings

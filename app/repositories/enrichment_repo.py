@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enrichment_event import EnrichmentEvent
@@ -33,6 +33,12 @@ async def list_runs(session: AsyncSession, limit: int = 50) -> list[EnrichmentRu
         select(EnrichmentRun).order_by(EnrichmentRun.created_at.desc()).limit(limit)
     )
     return list(res.scalars().all())
+
+
+async def sum_matched(session: AsyncSession) -> int:
+    """Total de matches do Apollo em todos os runs (≈ créditos consumidos)."""
+    res = await session.execute(select(func.coalesce(func.sum(EnrichmentRun.matched_count), 0)))
+    return int(res.scalar_one())
 
 
 async def log_event(

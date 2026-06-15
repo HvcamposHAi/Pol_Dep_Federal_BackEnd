@@ -1,0 +1,19 @@
+# Render Blueprint — backend FastAPI (Docker). Importe em Render: New → Blueprint.
+# As envs marcadas com sync:false você preenche no painel (segredos).
+services:
+  - type: web
+    name: pol-dep-federal-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL          # postgresql+asyncpg://...  (Supabase/Postgres — NÃO sqlite)
+        sync: false
+      - key: APOLLO_API_KEY        # master key do Apollo (recomendado via env em prod)
+        sync: false
+      - key: CORS_ORIGINS          # https://<seu-projeto>.pages.dev (origem do front no Cloudflare)
+        sync: false
+      - key: APP_ENV
+        value: prod
