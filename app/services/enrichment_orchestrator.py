@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -46,6 +47,47 @@ class EnrichmentOrchestrator:
         return [(1, None)]
 
     async def run(
+        self,
+        run_id: uuid.UUID,
+        *,
+        dry_run: bool = False,
+        filters: dict | None = None,
+    ) -> None:
+        """Executa o run. QUALQUER exceção não tratada marca o run como ``failed``
+        (status terminal) antes de propagar — assim a UI nunca fica presa em
+        ``running`` por causa de uma task que morreu silenciosamente."""
+        try:
+            await self._run(run_id, dry_run=dry_run, filters=filters)
+        except asyncio.CancelledError:
+            # Encerramento cooperativo (shutdown/reload): não vira "failed".
+            raise
+        except Exception as exc:  # noqa: BLE001 - garante status terminal e re-propaga
+            await self._mark_failed(run_id, exc)
+            raise
+
+    async def _mark_failed(self, run_id: uuid.UUID, exc: BaseException) -> None:
+        """Marca o run como ``failed`` (se ainda não terminal) e registra o motivo."""
+        try:
+            async with self._sm() as session:
+                run = await enrichment_repo.get_run(session, run_id)
+                if run is None or run.status in ("completed", "canceled", "failed"):
+                    return
+                run.status = "failed"
+                run.finished_at = datetime.now(UTC)
+                await enrichment_repo.log_event(
+                    session,
+                    run_id=run_id,
+                    lead_id=None,
+                    provider="orchestrator",
+                    level="error",
+                    event_type="run_failed",
+                    message=f"Execução interrompida: {exc}"[:480],
+                )
+                await session.commit()
+        except Exception:  # noqa: BLE001 - best-effort; não mascara o erro original
+            pass
+
+    async def _run(
         self,
         run_id: uuid.UUID,
         *,
@@ -118,10 +160,20 @@ class EnrichmentOrchestrator:
                         await self._process_lead(session, run_id, lead, scope, run)
                         run.processed_count += 1
                         run.last_processed_lead_id = lead.id
+                        run.current_round = round_number
+                        # Heartbeat por lead: prova de vida lida pelo watchdog da API
+                        # (um run cujo processo morreu para de bater e é marcado failed).
+                        run.checkpoint = {"heartbeat": datetime.now(UTC).isoformat()}
                         if remaining is not None:
                             remaining -= 1
-                    run.current_round = round_number
-                    await session.commit()
+                        # Commit por lead: transação curta (não segura a conexão do
+                        # pool durante as chamadas HTTP do lote) e progresso/parcial
+                        # sempre persistido — robusto a quedas no meio do lote.
+                        await session.commit()
+                        # Honra cancelamento DENTRO do lote (custo: 1 SELECT por lead).
+                        await session.refresh(run, ["status"])
+                        if run.status == "canceled":
+                            return
 
         async with self._sm() as session:
             run = await enrichment_repo.get_run(session, run_id)

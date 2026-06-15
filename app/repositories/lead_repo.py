@@ -32,10 +32,17 @@ def _apply_filters(
     cidade: str | None = None,
     estado: str | None = None,
     q: str | None = None,
+    processed_only: bool = False,
 ):
-    """Aplica o conjunto ÚNICO de filtros de leads (mesmo em list/stats/coverage/export)."""
+    """Aplica o conjunto ÚNICO de filtros de leads (mesmo em list/stats/coverage/export).
+
+    ``processed_only``: exporta só o que já foi tratado (status != "pending") —
+    usado pelo download parcial do run.
+    """
     if enrichment_status is not None:
         stmt = stmt.where(Lead.enrichment_status == enrichment_status)
+    if processed_only:
+        stmt = stmt.where(Lead.enrichment_status != "pending")
     if apollo_matched is not None:
         stmt = stmt.where(Lead.apollo_matched == apollo_matched)
     if cidade:
