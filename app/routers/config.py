@@ -29,10 +29,17 @@ class ApolloKeyIn(BaseModel):
     api_key: str = Field(min_length=8, description="API key do Apollo.io")
 
 
+class GoogleMapsKeyIn(BaseModel):
+    api_key: str = Field(min_length=8, description="API key do Google Maps Platform")
+
+
 class IntegrationsOut(BaseModel):
     apollo_configured: bool
     apollo_source: str  # "runtime" | "env" | "none"
     apollo_masked: str | None = None
+    google_maps_configured: bool = False
+    google_maps_source: str = "none"  # "runtime" | "env" | "none"
+    google_maps_masked: str | None = None
     viacep_active: bool = True
 
 
@@ -48,23 +55,41 @@ class ApolloUsageOut(BaseModel):
     remaining: int | None = None  # None quando budget desconhecido
 
 
-def _status() -> IntegrationsOut:
-    runtime_key = runtime_config.get_apollo_key()
-    env_key = (Settings().apollo_api_key or "").strip()  # só .env, sem override
-    effective = (get_settings().apollo_api_key or "").strip()
-
+def _provider_status(
+    runtime_key: str | None, env_key: str, effective: str
+) -> tuple[bool, str, str | None]:
+    """(configured, source, masked) para um provider com override de runtime."""
     if runtime_key:
         source = "runtime"
     elif env_key and env_key != APOLLO_KEY_PLACEHOLDER:
         source = "env"
     else:
         source = "none"
-
     configured = source != "none"
+    return configured, source, (_mask(effective) if configured else None)
+
+
+def _status() -> IntegrationsOut:
+    env = Settings()  # só .env, sem override
+    eff = get_settings()
+
+    apollo_configured, apollo_source, apollo_masked = _provider_status(
+        runtime_config.get_apollo_key(),
+        (env.apollo_api_key or "").strip(),
+        (eff.apollo_api_key or "").strip(),
+    )
+    gmaps_configured, gmaps_source, gmaps_masked = _provider_status(
+        runtime_config.get_google_maps_key(),
+        (env.google_maps_api_key or "").strip(),
+        (eff.google_maps_api_key or "").strip(),
+    )
     return IntegrationsOut(
-        apollo_configured=configured,
-        apollo_source=source,
-        apollo_masked=_mask(effective) if configured else None,
+        apollo_configured=apollo_configured,
+        apollo_source=apollo_source,
+        apollo_masked=apollo_masked,
+        google_maps_configured=gmaps_configured,
+        google_maps_source=gmaps_source,
+        google_maps_masked=gmaps_masked,
     )
 
 
@@ -83,6 +108,20 @@ async def set_apollo_key(body: ApolloKeyIn) -> IntegrationsOut:
 @router.delete("/integrations/apollo", response_model=IntegrationsOut)
 async def clear_apollo_key() -> IntegrationsOut:
     runtime_config.clear_apollo_key()
+    get_settings.cache_clear()
+    return _status()
+
+
+@router.put("/integrations/google-maps", response_model=IntegrationsOut)
+async def set_google_maps_key(body: GoogleMapsKeyIn) -> IntegrationsOut:
+    runtime_config.set_google_maps_key(body.api_key)
+    get_settings.cache_clear()  # próximas chamadas usam a nova chave
+    return _status()
+
+
+@router.delete("/integrations/google-maps", response_model=IntegrationsOut)
+async def clear_google_maps_key() -> IntegrationsOut:
+    runtime_config.clear_google_maps_key()
     get_settings.cache_clear()
     return _status()
 

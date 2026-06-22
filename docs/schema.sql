@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS leads (
   apollo_matched             boolean NOT NULL DEFAULT false,
   apollo_enriched_at         timestamptz,
   viacep_enriched_at         timestamptz,
+  google_maps_enriched_at    timestamptz,
   enrichment_status          text NOT NULL DEFAULT 'pending',
   enrichment_note            text,
   field_provenance           jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -85,6 +86,9 @@ CREATE INDEX IF NOT EXISTS idx_leads_apollo_match  ON leads (apollo_matched);
 CREATE INDEX IF NOT EXISTS idx_leads_cep           ON leads (cep);
 CREATE INDEX IF NOT EXISTS idx_leads_cidade_estado ON leads (cidade, estado);
 CREATE INDEX IF NOT EXISTS idx_leads_pending       ON leads (id) WHERE enrichment_status = 'pending';
+
+-- Migração idempotente p/ bancos já criados antes do provider Google Maps.
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS google_maps_enriched_at timestamptz;
 
 -- =========================================================
 -- TABELA: enrichment_runs  (run + checkpoint/resume)

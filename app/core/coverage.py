@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from app.core.column_mapping import COLUMN_DEFS
 from app.services.apollo_service import _FIELD_MAP as _APOLLO_MAP
+from app.services.google_maps_service import TARGET_COLUMNS as _GOOGLE_COLUMNS
 from app.services.viacep_service import _FIELD_MAP as _VIACEP_MAP
 
 # Coluna do banco -> label legível (espelha os cabeçalhos do CSV/import).
@@ -68,6 +69,10 @@ def _build_field_sources() -> dict[str, list[str]]:
         sources.setdefault(col, [])
         if "viacep" not in sources[col]:
             sources[col].append("viacep")
+    for col in _GOOGLE_COLUMNS:
+        sources.setdefault(col, [])
+        if "google_maps" not in sources[col]:
+            sources[col].append("google_maps")
     return sources
 
 

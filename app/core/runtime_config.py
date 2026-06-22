@@ -44,6 +44,23 @@ def clear_apollo_key() -> None:
     _write(data)
 
 
+def get_google_maps_key() -> str | None:
+    value = (_read().get("google_maps_api_key") or "").strip()
+    return value or None
+
+
+def set_google_maps_key(key: str) -> None:
+    data = _read()
+    data["google_maps_api_key"] = key.strip()
+    _write(data)
+
+
+def clear_google_maps_key() -> None:
+    data = _read()
+    data.pop("google_maps_api_key", None)
+    _write(data)
+
+
 def get_apollo_budget() -> int:
     """Orçamento de créditos Apollo informado pelo operador (0 = não informado)."""
     try:

@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     viacep_base_url: str = "https://viacep.com.br/ws"
     viacep_rate_limit: int = 120  # req/min
 
+    # Google Maps Platform (Places + Geocoding)
+    google_maps_api_key: str = ""
+    google_maps_base_url: str = "https://maps.googleapis.com/maps/api"
+    google_maps_rate_limit: int = 600  # req/min (~10 QPS, folga sobre o limite da API)
+    # Chamada extra de Place Details no match por telefone (traz address_components).
+    google_maps_place_details: bool = True
+
     # HTTP
     http_timeout_seconds: float = 30.0
     http_max_retries: int = 4
@@ -72,7 +79,12 @@ def get_settings() -> Settings:
     apollo_override = runtime_config.get_apollo_key()
     if apollo_override:
         settings.apollo_api_key = apollo_override
+    google_override = runtime_config.get_google_maps_key()
+    if google_override:
+        settings.google_maps_api_key = google_override
     # Normaliza placeholder/vazio -> "" (= não configurado) em todo o sistema.
     if settings.apollo_api_key.strip() in ("", APOLLO_KEY_PLACEHOLDER):
         settings.apollo_api_key = ""
+    if settings.google_maps_api_key.strip() in ("", APOLLO_KEY_PLACEHOLDER):
+        settings.google_maps_api_key = ""
     return settings

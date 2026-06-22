@@ -37,8 +37,8 @@ async def test_field_coverage_contagens_e_sources(sessionmaker_fixture):
 
     cidade = _by_field(cov, "cidade")
     assert cidade["filled"] == 2
-    # cidade pode vir de Apollo e ViaCEP.
-    assert cidade["sources"] == ["apollo", "viacep"]
+    # cidade pode vir de Apollo, ViaCEP e Google Maps.
+    assert cidade["sources"] == ["apollo", "viacep", "google_maps"]
 
     # filled + missing == total para todo campo.
     for row in cov:

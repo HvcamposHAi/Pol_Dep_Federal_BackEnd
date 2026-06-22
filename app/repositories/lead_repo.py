@@ -219,6 +219,8 @@ async def patch_fields(
             lead.apollo_matched = apollo_matched
     elif provider == "viacep":
         lead.viacep_enriched_at = now
+    elif provider == "google_maps":
+        lead.google_maps_enriched_at = now
     if status is not None:
         lead.enrichment_status = status
     if note is not None:

@@ -22,6 +22,7 @@ from app.core.rate_limiter import AsyncRateLimiter
 from app.models.lead import Lead
 from app.repositories import enrichment_repo, lead_repo
 from app.services.apollo_service import ApolloEnrichmentService
+from app.services.google_maps_service import GoogleMapsService
 from app.services.result import ProviderResult
 from app.services.viacep_service import ViaCepService
 
@@ -35,9 +36,14 @@ class EnrichmentOrchestrator:
         self._viacep = ViaCepService(
             settings, AsyncRateLimiter.from_rpm(settings.viacep_rate_limit)
         )
+        self._google = GoogleMapsService(
+            settings, AsyncRateLimiter.from_rpm(settings.google_maps_rate_limit)
+        )
         # Disjuntor: ao primeiro 401/403 do Apollo (chave/plano sem acesso), para de
         # chamar o Apollo no resto da execução (evita 403 em toda a base + rate limit).
         self._apollo_blocked = False
+        # Mesmo disjuntor p/ o Google Maps (REQUEST_DENIED -> chave/billing/API off).
+        self._google_blocked = False
 
     @staticmethod
     def _rounds(provider_scope: list[str]) -> list[tuple[int, bool | None]]:
@@ -129,6 +135,21 @@ class EnrichmentOrchestrator:
                         "(defina em Configurações › Integrações)."
                     ),
                 )
+            # Google Maps também exige chave. Sem chave, pula por completo.
+            if "google_maps" in scope and not self._settings.google_maps_api_key:
+                scope = [p for p in scope if p != "google_maps"]
+                await enrichment_repo.log_event(
+                    session,
+                    run_id=run_id,
+                    lead_id=None,
+                    provider="orchestrator",
+                    level="warn",
+                    event_type="skipped",
+                    message=(
+                        "Google Maps ignorado: GOOGLE_MAPS_API_KEY não configurada "
+                        "(defina em Configurações › Integrações)."
+                    ),
+                )
             await session.commit()
 
         if dry_run:
@@ -192,6 +213,7 @@ class EnrichmentOrchestrator:
     ) -> None:
         filled_total: list[str] = []
         apollo_matched: bool | None = None
+        google_matched = False
         reasons: list[str] = []  # motivos quando negativo
         apollo_ran = False
         try:
@@ -202,6 +224,32 @@ class EnrichmentOrchestrator:
                     reasons.append(f"ViaCEP: {viacep_result.error}")
                 elif not viacep_result.candidate:
                     reasons.append("ViaCEP: sem dados")
+            if "google_maps" in scope and not self._google_blocked:
+                google_result = await self._google.enrich(lead)
+                # Sem acesso (REQUEST_DENIED -> 403): desabilita p/ o resto da execução.
+                if google_result.http_status in (401, 403):
+                    self._google_blocked = True
+                    await enrichment_repo.log_event(
+                        session,
+                        run_id=run_id,
+                        lead_id=None,
+                        provider="orchestrator",
+                        level="warn",
+                        event_type="skipped",
+                        message=(
+                            f"Google Maps desabilitado nesta execução: {google_result.error}. "
+                            "Revise a chave/billing em Configurações › Integrações."
+                        ),
+                    )
+                if google_result.matched:
+                    google_matched = True
+                await self._apply(session, run_id, lead, google_result, filled_total)
+                if google_result.error:
+                    reasons.append(f"Google Maps: {google_result.error}")
+                elif not google_result.matched:
+                    reasons.append("Google Maps: sem correspondência")
+            elif "google_maps" in scope and self._google_blocked:
+                reasons.append("Google Maps: desabilitado (sem acesso)")
             if "apollo" in scope and not self._apollo_blocked:
                 apollo_ran = True
                 result = await self._apollo.enrich(lead)
@@ -233,15 +281,17 @@ class EnrichmentOrchestrator:
             elif "apollo" in scope and self._apollo_blocked:
                 reasons.append("Apollo: desabilitado (sem acesso)")
 
-            # Resultado: positivo = match no Apollo OU algum campo novo preenchido.
-            positivo = bool(apollo_matched or filled_total)
+            # Resultado: positivo = match (Apollo/Google) OU algum campo novo preenchido.
+            positivo = bool(apollo_matched or google_matched or filled_total)
             if positivo:
                 status = "enriched"
                 parts: list[str] = []
                 if filled_total:
                     parts.append("campos: " + ", ".join(dict.fromkeys(filled_total)))
-                if apollo_matched and not filled_total:
+                if not filled_total and apollo_matched:
                     parts.append("match Apollo (sem campo novo)")
+                if not filled_total and google_matched:
+                    parts.append("match Google Maps (sem campo novo)")
                 note = "; ".join(parts) or "match"
             else:
                 status = "skipped"

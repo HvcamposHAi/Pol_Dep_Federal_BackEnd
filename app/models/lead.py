@@ -79,6 +79,7 @@ class Lead(Base):
     apollo_matched: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     apollo_enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     viacep_enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    google_maps_enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enrichment_status: Mapped[str] = mapped_column(
         String, nullable=False, default="pending", server_default="pending"
     )
