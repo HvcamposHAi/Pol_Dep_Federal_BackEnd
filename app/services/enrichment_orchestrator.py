@@ -114,10 +114,6 @@ class EnrichmentOrchestrator:
             run.status = "running"
             if run.started_at is None:
                 run.started_at = datetime.now(UTC)
-            if run.total_targets == 0:
-                run.total_targets = await lead_repo.count_targets(
-                    session, cidade=cidade, estado=estado
-                )
             scope = list(run.provider_scope)
             # Apollo exige chave válida. Sem chave, pula o Apollo por completo — evita
             # 403 em todos os leads e a espera inútil do rate limit (46/min).
@@ -150,6 +146,12 @@ class EnrichmentOrchestrator:
                         "(defina em Configurações › Integrações)."
                     ),
                 )
+            # Conta alvos pelo escopo EFETIVO (pós-drop): assim o total reflete o
+            # que de fato será processado (ex.: leads sem google_maps_enriched_at).
+            if run.total_targets == 0:
+                run.total_targets = await lead_repo.count_targets(
+                    session, cidade=cidade, estado=estado, providers=scope
+                )
             await session.commit()
 
         if dry_run:
@@ -174,6 +176,7 @@ class EnrichmentOrchestrator:
                         limit=fetch,
                         cidade=cidade,
                         estado=estado,
+                        providers=scope,
                     )
                     if not leads:
                         break
@@ -216,10 +219,14 @@ class EnrichmentOrchestrator:
         google_matched = False
         reasons: list[str] = []  # motivos quando negativo
         apollo_ran = False
+        now = datetime.now(UTC)
         try:
             if "viacep" in scope:
                 viacep_result = await self._viacep.enrich(lead)
                 await self._apply(session, run_id, lead, viacep_result, filled_total)
+                # Carimba a tentativa (mesmo sem dados) para o lead SAIR do conjunto-alvo
+                # em runs dirigidos por ViaCEP — sem isso, "sem CEP" laçaria pra sempre.
+                lead.viacep_enriched_at = now
                 if viacep_result.error:
                     reasons.append(f"ViaCEP: {viacep_result.error}")
                 elif not viacep_result.candidate:
@@ -244,6 +251,10 @@ class EnrichmentOrchestrator:
                 if google_result.matched:
                     google_matched = True
                 await self._apply(session, run_id, lead, google_result, filled_total)
+                # Carimba a tentativa (exceto quando sem acesso 401/403, p/ retentar
+                # num run futuro com a chave corrigida) — garante término do alvo.
+                if google_result.http_status not in (401, 403):
+                    lead.google_maps_enriched_at = now
                 if google_result.error:
                     reasons.append(f"Google Maps: {google_result.error}")
                 elif not google_result.matched:
@@ -296,6 +307,12 @@ class EnrichmentOrchestrator:
             else:
                 status = "skipped"
                 note = "; ".join(reasons) or "sem correspondência"
+
+            # Reprocessamento por uma fonte nova NÃO rebaixa um lead já enriquecido:
+            # se nada novo veio agora, preserva o status/nota anteriores.
+            if status == "skipped" and lead.enrichment_status == "enriched":
+                status = "enriched"
+                note = lead.enrichment_note or note
 
             await lead_repo.patch_fields(
                 session,
@@ -394,6 +411,7 @@ class EnrichmentOrchestrator:
                 limit=limit or 50,
                 cidade=cidade,
                 estado=estado,
+                providers=scope,
             )
             for lead in leads:
                 await enrichment_repo.log_event(

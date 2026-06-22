@@ -203,3 +203,89 @@ async def test_orquestrador_enriquece_com_google_maps(sessionmaker_fixture):
         assert lead.estado == "PR"
         assert lead.google_maps_enriched_at is not None
         assert float(lead.latitude) == pytest.approx(-25.4)
+
+
+@respx.mock
+async def test_reprocessa_base_terminal_sem_rebaixar(sessionmaker_fixture):
+    """Lead já 'enriched' (Apollo) e nunca tocado pelo Google é alvo de um run
+    google-only — enriquece geo via geocoding e NÃO rebaixa o status."""
+    sm = sessionmaker_fixture
+    settings = _settings()
+
+    async with sm() as s:
+        await lead_repo.upsert_many(
+            s, [{"phone_e164": "+5541999990004", "cidade": "Curitiba", "cep": "80010000"}]
+        )
+        lead = await lead_repo.get_by_phone(s, "+5541999990004")
+        lead.enrichment_status = "enriched"  # já terminal (run anterior do Apollo)
+        lead.enrichment_note = "match Apollo"
+        await s.commit()
+
+    respx.get(url__regex=FIND_URL).mock(
+        return_value=httpx.Response(200, json={"status": "ZERO_RESULTS", "candidates": []})
+    )
+    respx.get(url__regex=GEOCODE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "OK",
+                "results": [
+                    {
+                        "address_components": _DETAILS_COMPONENTS,
+                        "geometry": {"location": {"lat": -25.5, "lng": -49.3}},
+                    }
+                ],
+            },
+        )
+    )
+
+    async with sm() as s:
+        run = await enrichment_repo.create_run(s, provider_scope=["google_maps"], params={})
+        await s.commit()
+        run_id = run.id
+
+    await close_client()
+    await EnrichmentOrchestrator(settings, sm).run(run_id, filters={})
+
+    async with sm() as s:
+        run = await enrichment_repo.get_run(s, run_id)
+        assert run.status == "completed"
+        assert run.processed_count == 1  # o lead terminal FOI selecionado
+
+        lead = await lead_repo.get_by_phone(s, "+5541999990004")
+        assert lead.enrichment_status == "enriched"  # não rebaixado
+        assert lead.google_maps_enriched_at is not None
+        assert float(lead.latitude) == pytest.approx(-25.5)
+
+
+@respx.mock
+async def test_no_match_carimba_timestamp_e_run_termina(sessionmaker_fixture):
+    """Sem telefone casado e sem endereço, o Google não acha nada — mas carimba
+    google_maps_enriched_at, então o lead sai do alvo e o run TERMINA (não laça)."""
+    sm = sessionmaker_fixture
+    settings = _settings()
+
+    async with sm() as s:
+        await lead_repo.upsert_many(s, [{"phone_e164": "+5541999990005"}])  # sem endereço
+        await s.commit()
+
+    respx.get(url__regex=FIND_URL).mock(
+        return_value=httpx.Response(200, json={"status": "ZERO_RESULTS", "candidates": []})
+    )
+
+    async with sm() as s:
+        run = await enrichment_repo.create_run(s, provider_scope=["google_maps"], params={})
+        await s.commit()
+        run_id = run.id
+
+    await close_client()
+    await EnrichmentOrchestrator(settings, sm).run(run_id, filters={})
+
+    async with sm() as s:
+        run = await enrichment_repo.get_run(s, run_id)
+        assert run.status == "completed"
+        assert run.error_count == 0
+
+        lead = await lead_repo.get_by_phone(s, "+5541999990005")
+        assert lead.google_maps_enriched_at is not None  # carimbado mesmo sem match
+        assert lead.enrichment_status == "skipped"

@@ -149,6 +149,25 @@ async def list_leads(
     return list(rows), total
 
 
+def _target_predicate(providers: list[str] | None):
+    """Predicado de "ainda há trabalho" para o run, conforme o escopo de providers.
+
+    - Apollo no escopo: dirigido por ``enrichment_status == 'pending'`` (fluxo de
+      créditos com rodadas por e-mail).
+    - Sem Apollo: dirigido por "este provider ainda não tocou o lead"
+      (``<provider>_enriched_at IS NULL``). Isso permite que uma fonte NOVA
+      (ex.: Google Maps) enriqueça a base já terminal sem rechamar o Apollo.
+    """
+    provs = providers or []
+    if "apollo" in provs:
+        return Lead.enrichment_status == "pending"
+    if "google_maps" in provs:
+        return Lead.google_maps_enriched_at.is_(None)
+    if "viacep" in provs:
+        return Lead.viacep_enriched_at.is_(None)
+    return Lead.enrichment_status == "pending"
+
+
 async def select_targets(
     session: AsyncSession,
     *,
@@ -157,13 +176,14 @@ async def select_targets(
     limit: int | None,
     cidade: str | None = None,
     estado: str | None = None,
+    providers: list[str] | None = None,
 ) -> list[Lead]:
-    """Seleciona leads pendentes para enriquecer, ordenados por id (resume determinístico).
+    """Seleciona leads-alvo para enriquecer, ordenados por id (resume determinístico).
 
-    ``with_email``: True = só com e-mail (rodada 1); False = sem e-mail (rodada 2);
-    None = todos pendentes.
+    O conjunto-alvo depende do escopo (ver ``_target_predicate``). ``with_email``
+    (True/False) só vale no fluxo do Apollo; None = sem filtro de e-mail.
     """
-    stmt = select(Lead).where(Lead.enrichment_status == "pending")
+    stmt = select(Lead).where(_target_predicate(providers))
     if with_email is True:
         stmt = stmt.where(Lead.email.is_not(None))
     elif with_email is False:
@@ -185,8 +205,9 @@ async def count_targets(
     *,
     cidade: str | None = None,
     estado: str | None = None,
+    providers: list[str] | None = None,
 ) -> int:
-    stmt = select(func.count()).select_from(Lead).where(Lead.enrichment_status == "pending")
+    stmt = select(func.count()).select_from(Lead).where(_target_predicate(providers))
     if cidade:
         stmt = stmt.where(Lead.cidade == cidade)
     if estado:
