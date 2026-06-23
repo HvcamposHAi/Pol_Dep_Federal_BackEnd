@@ -1,8 +1,8 @@
 """Base declarativa do SQLAlchemy + tipos cross-dialect.
 
-Os tipos abaixo rendem como Postgres no Supabase (JSONB, ARRAY, uuid) e caem para
-equivalentes genéricos no SQLite — assim os MESMOS models rodam tanto contra o
-Supabase quanto contra um banco de teste SQLite (E2E sem servidor).
+Os tipos abaixo caem para equivalentes genéricos no **SQLite** (banco padrão,
+local) e rendem como Postgres (JSONB, ARRAY, uuid) quando ``DATABASE_URL`` aponta
+para um Postgres — assim os MESMOS models rodam nos dois sem alteração.
 """
 
 from sqlalchemy import JSON, Text

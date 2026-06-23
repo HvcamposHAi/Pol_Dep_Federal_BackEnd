@@ -1,4 +1,7 @@
-"""Engine assíncrona e sessão SQLAlchemy contra o Supabase (conexão direta)."""
+"""Engine assíncrona e sessão SQLAlchemy.
+
+O banco é definido por ``DATABASE_URL``. Por padrão é **SQLite local** (``dev.db``,
+criado/migrado automaticamente no startup); apontando para Postgres, roda igual."""
 
 from collections.abc import AsyncGenerator
 
@@ -16,8 +19,8 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_engine() -> AsyncEngine:
-    """Cria (uma vez) e retorna a engine async. Pool com pre-ping para conexões
-    derrubadas pelo Supabase/pooler."""
+    """Cria (uma vez) e retorna a engine async. ``pool_pre_ping`` descarta conexões
+    derrubadas (relevante em Postgres remoto; inócuo no SQLite local)."""
     global _engine
     if _engine is None:
         settings = get_settings()

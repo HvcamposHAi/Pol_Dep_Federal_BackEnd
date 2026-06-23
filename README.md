@@ -1,13 +1,13 @@
 # Pol_Dep_Federal_BackEnd
 
-Backend (FastAPI + Supabase/PostgreSQL) para **importação** e **enriquecimento** de
-leads da campanha — Apollo.io (People Enrichment) + ViaCEP, com regra
+Backend (FastAPI + SQLite local, por padrão) para **importação** e **enriquecimento**
+de leads da campanha — Apollo.io (People Enrichment) + ViaCEP + Google Maps, com regra
 *fill-only-empty* (nunca sobrescreve dado existente), rastreabilidade de origem
 (`field_provenance`) e jobs retomáveis.
 
 ## Stack
-- Python 3.11+ · FastAPI · SQLAlchemy 2 (async) + asyncpg
-- Supabase (PostgreSQL) — conexão direta
+- Python 3.11+ · FastAPI · SQLAlchemy 2 (async)
+- **SQLite local** (`dev.db`) por padrão — sem servidor. Postgres é opcional (deploy).
 - httpx + tenacity (retry/backoff) · openpyxl (xlsx) · phonenumbers (E.164)
 
 ## Setup
@@ -16,12 +16,13 @@ leads da campanha — Apollo.io (People Enrichment) + ViaCEP, com regra
 python -m venv .venv
 .venv\Scripts\activate            # Windows (Linux/Mac: source .venv/bin/activate)
 pip install -e ".[dev]"
-copy .env.example .env            # preencha DATABASE_URL e APOLLO_API_KEY
+copy .env.example .env            # padrão já usa SQLite local; preencha APOLLO_API_KEY
 ```
 
-1. Rode o DDL de [docs/schema.sql](docs/schema.sql) no **SQL Editor do Supabase**
-   (cria `leads`, `enrichment_runs`, `enrichment_events`).
-2. Suba a API: `uvicorn app.main:app --reload` → `GET /health`.
+1. Suba a API: `uvicorn app.main:app --reload` → `GET /health`. O banco local
+   (`dev.db`) é **criado e migrado automaticamente** no startup — nada manual.
+2. *(Opcional, só Postgres)* aponte `DATABASE_URL` para o Postgres e rode o DDL de
+   [docs/schema.sql](docs/schema.sql) uma vez.
 
 ## Uso
 

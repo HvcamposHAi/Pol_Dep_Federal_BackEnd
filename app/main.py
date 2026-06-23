@@ -20,10 +20,12 @@ _STATIC = Path(__file__).resolve().parent.parent / "static"
 
 
 async def _init_sqlite_schema() -> None:
-    """Instalador local: cria as tabelas automaticamente quando o banco é SQLite."""
+    """Banco local (SQLite, padrão): cria as tabelas e adiciona colunas novas que
+    ainda não existam — assim o ``dev.db`` se mantém em dia ao evoluir os models,
+    sem migração manual. (Postgres é opcional e NÃO é auto-criado: usa docs/schema.sql.)"""
     settings = get_settings()
     if not settings.database_url.startswith("sqlite"):
-        return  # Postgres/Supabase usa docs/schema.sql (não auto-criar em prod)
+        return
     # importa os models para registrar as tabelas no metadata
     from app.models import enrichment_event, enrichment_run, lead  # noqa: F401
     from app.models.base import Base
@@ -31,6 +33,31 @@ async def _init_sqlite_schema() -> None:
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_sqlite_add_missing_columns)
+
+
+def _sqlite_add_missing_columns(conn) -> None:
+    """SQLite-only: adiciona (como NULLable) colunas presentes nos models mas
+    ausentes em tabelas JÁ existentes — ``create_all`` não altera tabela criada.
+    Evita o 500 'no such column' ao adicionar campos sem migração formal no local."""
+    from sqlalchemy import inspect, text
+
+    from app.models import enrichment_event, enrichment_run, lead  # noqa: F401
+    from app.models.base import Base
+
+    inspector = inspect(conn)
+    existing_tables = set(inspector.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # tabela nova: já criada por create_all
+        present = {c["name"] for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in present:
+                continue
+            col_type = column.type.compile(dialect=conn.dialect)
+            conn.execute(
+                text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}')
+            )
 
 
 @asynccontextmanager

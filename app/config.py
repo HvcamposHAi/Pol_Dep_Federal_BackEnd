@@ -20,8 +20,9 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Banco (Supabase / PostgreSQL) — scheme precisa ser postgresql+asyncpg://
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
+    # Banco — padrão: SQLite LOCAL (arquivo dev.db, criado/migrado no startup).
+    # Para Postgres (opcional), aponte DATABASE_URL p/ postgresql+asyncpg://...
+    database_url: str = "sqlite+aiosqlite:///./dev.db"
 
     # Apollo.io
     apollo_api_key: str = ""
