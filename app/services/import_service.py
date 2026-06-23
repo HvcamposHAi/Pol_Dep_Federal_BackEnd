@@ -144,6 +144,38 @@ async def import_bytes(
             total=0, inserted=0, updated=0, skipped=0, errors=[f"falha ao ler arquivo: {exc}"]
         )
 
+    # Arquivo vazio / sem linhas de dados.
+    if not raw_rows:
+        return ImportResult(
+            total=0,
+            inserted=0,
+            updated=0,
+            skipped=0,
+            errors=[
+                "Não foi possível carregar o arquivo: nenhuma linha de dados encontrada. "
+                "Use um CSV com separador ';' em UTF-8 com BOM, ou um arquivo .xlsx."
+            ],
+        )
+
+    # Validação de estrutura pelo CABEÇALHO: se nada (ou a coluna de telefone) é
+    # reconhecido, o arquivo está em formato/colunas inesperados — devolve UMA
+    # mensagem clara em vez de N linhas "telefone ausente" (que confundem).
+    resolved = [resolve_header(h) for h in raw_rows[0]]
+    has_phone_col = any(r and r[0] in (PHONE_COLUMN, PHONE_FALLBACK_COLUMN) for r in resolved)
+    structural_error: str | None = None
+    if not any(resolved):
+        structural_error = (
+            "Não foi possível carregar o arquivo: nenhuma coluna reconhecida no cabeçalho. "
+            "Verifique se é um CSV com separador ';' em UTF-8 com BOM (ou .xlsx) e se é o "
+            "arquivo correto."
+        )
+    elif not has_phone_col:
+        structural_error = (
+            "Não foi possível carregar o arquivo: a coluna de telefone "
+            "('Telefone (E.164)' ou 'Telefone (bruto)') não foi encontrada no cabeçalho. "
+            "Confira o separador (';'), a codificação (UTF-8 com BOM) e se é o arquivo correto."
+        )
+
     rejected: list[RejectedRow] = []
     to_upsert: list[dict[str, Any]] = []
     for idx, raw in enumerate(raw_rows, start=2):  # linha 1 = cabeçalho
@@ -169,10 +201,21 @@ async def import_bytes(
 
     # skipped: linhas válidas que já existiam e não tinham nada a preencher
     skipped = max(0, len(to_upsert) - inserted - updated)
+
+    errors: list[str] = []
+    if structural_error:
+        errors.append(structural_error)
+    elif not to_upsert:
+        # Cabeçalho ok, mas NENHUMA linha virou contato — provável arquivo errado.
+        errors.append(
+            f"Nenhum contato foi carregado: todas as {len(raw_rows)} linhas foram rejeitadas "
+            "(telefone ausente ou inválido). Verifique se o arquivo e as colunas estão corretos."
+        )
     return ImportResult(
         total=len(raw_rows),
         inserted=inserted,
         updated=updated,
         skipped=skipped,
         rejected=rejected,
+        errors=errors,
     )
